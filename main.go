@@ -3,10 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"github.com/Riskified/worker_runner/internal/healthcheck"
 	log "github.com/sirupsen/logrus"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
@@ -14,10 +13,7 @@ import (
 	"syscall"
 )
 
-func healthcheck(w http.ResponseWriter, _ *http.Request) {
-	log.Debug("got healthcheck")
-	fmt.Fprintf(w, "ok\n")
-}
+
 
 func startWorker(stopChan <-chan struct{}, wg *sync.WaitGroup, command string, args ...string) {
 	cmd := exec.Command(command, args...)
@@ -41,34 +37,20 @@ func startWorker(stopChan <-chan struct{}, wg *sync.WaitGroup, command string, a
 	cmd.Process.Signal(syscall.SIGTERM)
 }
 
-func startServerAsync() *http.Server{
-	srv := &http.Server{Addr: ":8000"}
-	http.HandleFunc("/healthcheck", healthcheck)
-	go func() {
-	if err := srv.ListenAndServe(); err != nil {
-		log.WithField("error", err).Error("error in ListenAndServe()")
-		os.Exit(1)
-	}
-	}()
-
-	return srv
-}
-
 func main() {
 	if len(os.Args) == 1 {
 		log.Fatal("command not found. usages: worker_runner COMMANDS ARGS")
 	}
 
 	stopChan := signals.SetupSignalHandler()
-
-	wg := &sync.WaitGroup{}
-
+	
 	log.Info("start worker")
+	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go startWorker(stopChan, wg, os.Args[1], os.Args[2:]...)
 
 	log.Info("start server")
-	srv := startServerAsync()
+	srv := healthcheck.StartServerAsync(8000)
 
 	wg.Wait()
 	log.Info("shutdown server")
