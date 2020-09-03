@@ -26,7 +26,8 @@ func startWorker(stopChan <-chan struct{}, command string, args ...string) (done
 	go func() {
 		err := cmd.Start()
 		if err != nil {
-			log.WithField("error", err).Error("cmd.Run() failed")
+			log.WithField("error", err).Error("Failed starting command")
+			close(done)
 		}
 		log.Info("worker started")
 
