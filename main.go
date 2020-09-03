@@ -9,32 +9,36 @@ import (
 	"os"
 	"os/exec"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
-	"sync"
 	"syscall"
 )
 
 
 
-func startWorker(stopChan <-chan struct{}, wg *sync.WaitGroup, command string, args ...string) {
+func startWorker(stopChan <-chan struct{}, command string, args ...string) (doneChan <-chan struct{}) {
 	cmd := exec.Command(command, args...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
+	done := make(chan struct{})
+
 	go func() {
-		err := cmd.Run()
+		err := cmd.Start()
 		if err != nil {
 			log.WithField("error", err).Error("cmd.Run() failed")
 		}
+		log.Info("worker started")
+
+		<-stopChan
+		log.Info("send worker SIGTERM")
+		cmd.Process.Signal(syscall.SIGTERM)
+
 		cmd.Wait()
-		wg.Done()
-		log.Info("worker ended")
+		close(done)
 	}()
 
-	<-stopChan
-	log.Info("send worker SIGTERM")
-	cmd.Process.Signal(syscall.SIGTERM)
+	return done
 }
 
 func main() {
@@ -42,17 +46,14 @@ func main() {
 		log.Fatal("command not found. usages: worker_runner COMMANDS ARGS")
 	}
 
-	stopChan := signals.SetupSignalHandler()
-	
 	log.Info("start worker")
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go startWorker(stopChan, wg, os.Args[1], os.Args[2:]...)
+	done := startWorker(signals.SetupSignalHandler(), os.Args[1], os.Args[2:]...)
 
 	log.Info("start server")
 	srv := healthcheck.StartServerAsync(8000)
 
-	wg.Wait()
+	<- done
+	log.Info("worker ended")
 	log.Info("shutdown server")
 	srv.Shutdown(context.TODO())
 	log.Info("server ended")

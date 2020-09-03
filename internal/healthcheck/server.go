@@ -11,8 +11,6 @@ func healthcheck(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "ok\n")
 }
 
-const Work = "work"
-
 type ServerStatus struct {
 	Status string
 	Error  error
