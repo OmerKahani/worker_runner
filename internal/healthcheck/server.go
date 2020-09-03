@@ -22,7 +22,7 @@ func StartServerAsync(port int) *http.Server{
 	srv := &http.Server{Addr: fmt.Sprintf(":%d", port)}
 	http.HandleFunc("/healthcheck", healthcheck)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.WithField("error", err).Error("error in ListenAndServe()")
 		}
 	}()
