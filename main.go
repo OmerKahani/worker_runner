@@ -15,20 +15,22 @@ import (
 
 
 
-func startWorker(stopChan <-chan struct{}, command string, args ...string) (doneChan <-chan struct{}) {
+func startWorker(stopChan <-chan struct{}, command string, args ...string) (doneChan <-chan error) {
 	cmd := exec.Command(command, args...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
-	done := make(chan struct{})
+	done := make(chan error)
 
 	go func() {
+		defer close(done)
 		err := cmd.Start()
 		if err != nil {
 			log.WithField("error", err).Error("Failed starting command")
-			close(done)
+			done <- err
+			return
 		}
 		log.Info("worker started")
 
@@ -38,25 +40,27 @@ func startWorker(stopChan <-chan struct{}, command string, args ...string) (done
 			cmd.Process.Signal(syscall.SIGTERM)
 		}()
 
-		cmd.Wait()
-		close(done)
+		err = cmd.Wait()
+		done <- err
 	}()
-
-
 
 	return done
 }
 
 func main() {
-	var port int
+	var port	int
+	var debug	bool
 	flag.IntVar(&port, "port", 8080, "port for healthcheck")
+	flag.BoolVar(&debug, "debug", false, "print debug log")
 
 	flag.Parse()
 	if len(flag.Args()) == 0 {
 		log.Fatal("command not found. usages: worker_runner COMMANDS ARGS")
 	}
 
-	log.Info(flag.Args())
+	if debug {
+		log.SetLevel(log.DebugLevel)
+	}
 
 	log.Info("start worker")
 	done := startWorker(signals.SetupSignalHandler(), flag.Args()[0], flag.Args()[1:]...)
@@ -64,10 +68,16 @@ func main() {
 	log.Info("start server")
 	srv := healthcheck.StartServerAsync(port)
 
-	<- done
-	log.Info("worker ended")
-	log.Info("shutdown server")
+	err := <- done
+	if err != nil {
+		log.WithField("error", err).Error("Worker ended with error")
+	}
 	srv.Shutdown(context.TODO())
 	log.Info("server ended")
+
+	if err != nil {
+		log.Exit(1)
+	}
+
 
 }
