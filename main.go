@@ -3,74 +3,81 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"flag"
+	"github.com/Riskified/worker_runner/internal/healthcheck"
+	log "github.com/sirupsen/logrus"
 	"io"
-	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
-	"sync"
 	"syscall"
 )
 
-func healthcheck(w http.ResponseWriter, req *http.Request) {
-	log.Print("got healthcheck")
-	fmt.Fprintf(w, "ok\n")
-}
 
-func startWorker(stopChan <-chan struct{}, wg *sync.WaitGroup, command string, args ...string) {
+
+func startWorker(stopChan <-chan struct{}, command string, args ...string) (doneChan <-chan error) {
 	cmd := exec.Command(command, args...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
+	done := make(chan error)
+
 	go func() {
-		err := cmd.Run()
+		defer close(done)
+		err := cmd.Start()
 		if err != nil {
-			log.Fatalf("cmd.Run() failed with %s\n", err)
+			log.WithField("error", err).Error("Failed starting command")
+			done <- err
+			return
 		}
-		cmd.Wait()
-		wg.Done()
-		log.Print("worker ended")
+		log.Info("worker started")
+
+		go func() {
+			<-stopChan
+			log.Info("send worker SIGTERM")
+			cmd.Process.Signal(syscall.SIGTERM)
+		}()
+
+		err = cmd.Wait()
+		done <- err
 	}()
 
-	<-stopChan
-	log.Print("send worker SIGTERM")
-	cmd.Process.Signal(syscall.SIGTERM)
-}
-
-func startServerAsync() *http.Server{
-	srv := &http.Server{Addr: ":8000"}
-	http.HandleFunc("/healthcheck", healthcheck)
-	go func() {
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("ListenAndServe(): %v", err)
-	}
-	}()
-
-	return srv
+	return done
 }
 
 func main() {
-	if len(os.Args) == 1 {
+	var port	int
+	var debug	bool
+	flag.IntVar(&port, "port", 8080, "port for healthcheck")
+	flag.BoolVar(&debug, "debug", false, "print debug log")
+
+	flag.Parse()
+	if len(flag.Args()) == 0 {
 		log.Fatal("command not found. usages: worker_runner COMMANDS ARGS")
 	}
-	stopChan := signals.SetupSignalHandler()
 
-	wg := &sync.WaitGroup{}
+	if debug {
+		log.SetLevel(log.DebugLevel)
+	}
 
-	log.Print("start worker")
-	wg.Add(1)
-	go startWorker(stopChan, wg, os.Args[1], os.Args[2:]...)
+	log.Info("start worker")
+	done := startWorker(signals.SetupSignalHandler(), flag.Args()[0], flag.Args()[1:]...)
 
-	log.Print("start server")
-	srv := startServerAsync()
+	log.Info("start server")
+	srv := healthcheck.StartServerAsync(port)
 
-	wg.Wait()
-	log.Print("shutdown server")
+	err := <- done
+	if err != nil {
+		log.WithField("error", err).Error("Worker ended with error")
+	}
 	srv.Shutdown(context.TODO())
-	log.Print("server ended")
+	log.Info("server ended")
+
+	if err != nil {
+		log.Exit(1)
+	}
+
 
 }
